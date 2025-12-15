@@ -121,12 +121,21 @@ def download_srt_subtitle(video_url: str, output_path: str):
     output_dir = os.path.dirname(output_path)
     os.makedirs(output_dir, exist_ok=True)
 
-    max_retries = 3
+    max_retries = 5
     player_clients = [
-        ['android', 'web'],  # First try: android + web
-        ['ios', 'android'],  # Second try: ios + android
-        ['web', 'ios', 'android'],  # Third try: all clients
+        ['android'],  # First try: android only (most reliable)
+        ['ios'],  # Second try: ios
+        ['web'],  # Third try: web
+        ['android', 'web'],  # Fourth try: android + web
+        ['ios', 'android', 'web'],  # Fifth try: all clients
     ]
+
+    # Check for cookies file (optional - set YOUTUBE_COOKIES env var)
+    cookies_file = os.environ.get('YOUTUBE_COOKIES', None)
+    if cookies_file and os.path.exists(cookies_file):
+        cookies_file = os.path.abspath(cookies_file)
+    else:
+        cookies_file = None
 
     for attempt in range(max_retries):
         try:
@@ -139,6 +148,7 @@ def download_srt_subtitle(video_url: str, output_path: str):
                 'outtmpl': os.path.join(output_dir, '%(id)s.%(ext)s'),
                 # Anti-bot detection options
                 'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'referer': 'https://www.youtube.com/',
                 'extractor_args': {
                     'youtube': {
                         'player_client': player_clients[attempt % len(player_clients)],
@@ -148,6 +158,10 @@ def download_srt_subtitle(video_url: str, output_path: str):
                 'quiet': False,
                 'no_warnings': False,
             }
+            
+            # Add cookies if available
+            if cookies_file:
+                ydl_opts['cookiefile'] = cookies_file
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(video_url, download=False)
@@ -171,24 +185,33 @@ def download_srt_subtitle(video_url: str, output_path: str):
             error_msg = str(e).lower()
             if "bot" in error_msg or "sign in" in error_msg or "confirm" in error_msg:
                 if attempt < max_retries - 1:
-                    wait_time = (attempt + 1) * 2  # Exponential backoff: 2s, 4s
+                    wait_time = (attempt + 1) * 3  # Exponential backoff: 3s, 6s, 9s, 12s
                     time.sleep(wait_time)
                     continue
                 else:
-                    raise Exception(
-                        f"YouTube bot detection after {max_retries} attempts. "
-                        "This is a known issue with YouTube's anti-bot measures. "
-                        "Possible solutions:\n"
-                        "1. Try again in a few minutes\n"
-                        "2. Use a different video URL\n"
-                        "3. YouTube may be temporarily blocking requests from this IP"
+                    # Final attempt failed - provide helpful error message
+                    error_solution = (
+                        f"YouTube bot detection after {max_retries} attempts.\n\n"
+                        "**This is a known issue with YouTube's anti-bot measures.**\n\n"
+                        "**Immediate Solutions:**\n"
+                        "1. Wait 5-10 minutes and try again (YouTube rate limiting)\n"
+                        "2. Try a different video URL\n"
+                        "3. The video may have restricted access\n\n"
+                        "**Advanced Solution (Recommended for Production):**\n"
+                        "Use YouTube cookies to authenticate:\n"
+                        "1. Export cookies from your browser (see: https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp)\n"
+                        "2. Upload cookies file to Render\n"
+                        "3. Set environment variable: YOUTUBE_COOKIES=/path/to/cookies.txt\n\n"
+                        "**Note:** YouTube frequently updates their bot detection. "
+                        "This may require periodic updates to yt-dlp or using cookies."
                     )
+                    raise Exception(error_solution)
             else:
                 # Re-raise other errors immediately
                 raise
         except Exception as e:
             if attempt < max_retries - 1:
-                time.sleep(2)
+                time.sleep(3)
                 continue
             else:
                 raise
