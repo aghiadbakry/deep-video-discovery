@@ -140,12 +140,15 @@ def download_srt_subtitle(video_url: str, output_path: str):
     for attempt in range(max_retries):
         try:
             # Enhanced yt-dlp options to avoid bot detection
+            # Since we only need subtitles, we skip video format selection entirely
             ydl_opts = {
                 'writesubtitles': True,
                 'subtitlesformat': 'srt',
                 'skip_download': True,
                 'writeautomaticsub': True,
                 'outtmpl': os.path.join(output_dir, '%(id)s.%(ext)s'),
+                # Use flexible format selection - any available format since we skip download
+                'format': 'bestaudio/best/worst',  # Try best audio, then best, then worst
                 # Anti-bot detection options
                 'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'referer': 'https://www.youtube.com/',
@@ -164,8 +167,18 @@ def download_srt_subtitle(video_url: str, output_path: str):
                 ydl_opts['cookiefile'] = cookies_file
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(video_url, download=False)
-                video_id = info['id']
+                # Get info without processing formats (we only need subtitles)
+                try:
+                    info = ydl.extract_info(video_url, download=False, process=False)
+                    video_id = info.get('id') or info.get('display_id')
+                except:
+                    # Fallback: extract video ID from URL
+                    if 'v=' in video_url:
+                        video_id = video_url.split('v=')[1].split('&')[0]
+                    else:
+                        raise ValueError(f"Could not extract video ID from {video_url}")
+                
+                # Now download subtitles (this will process formats but we skip download)
                 ydl.download([video_url])
 
             # Locate the downloaded subtitle file (yt-dlp names them as <id>.<lang>.srt)
@@ -183,6 +196,66 @@ def download_srt_subtitle(video_url: str, output_path: str):
                 
         except (DownloadError, ExtractorError) as e:
             error_msg = str(e).lower()
+            # Handle format errors - try with more flexible format
+            if "format is not available" in error_msg or "requested format" in error_msg:
+                if attempt < max_retries - 1:
+                    # Try with more permissive format
+                    try:
+                        ydl_opts_flexible = ydl_opts.copy()
+                        # Use very permissive format selection
+                        ydl_opts_flexible['format'] = 'best[height<=480]/best/worst'
+                        
+                        with yt_dlp.YoutubeDL(ydl_opts_flexible) as ydl:
+                            try:
+                                info = ydl.extract_info(video_url, download=False, process=False)
+                                video_id = info.get('id') or info.get('display_id')
+                            except:
+                                if 'v=' in video_url:
+                                    video_id = video_url.split('v=')[1].split('&')[0]
+                                else:
+                                    raise
+                            ydl.download([video_url])
+                        
+                        # Check for subtitle file
+                        downloaded_subtitle_path = None
+                        for f in os.listdir(output_dir):
+                            if f.startswith(video_id) and f.endswith(".srt"):
+                                downloaded_subtitle_path = os.path.join(output_dir, f)
+                                break
+                        
+                        if downloaded_subtitle_path:
+                            shutil.move(downloaded_subtitle_path, output_path)
+                            return  # Success with flexible format!
+                    except:
+                        pass  # Continue to normal error handling
+            if "bot" in error_msg or "sign in" in error_msg or "confirm" in error_msg:
+                if attempt < max_retries - 1:
+                    # Remove format requirement and try again
+                    try:
+                        ydl_opts_no_format = ydl_opts.copy()
+                        ydl_opts_no_format.pop('format', None)
+                        ydl_opts_no_format['format'] = 'bestaudio/best'  # More flexible format
+                        
+                        with yt_dlp.YoutubeDL(ydl_opts_no_format) as ydl:
+                            info = ydl.extract_info(video_url, download=False, process=False)
+                            video_id = info.get('id') or info.get('display_id')
+                            if not video_id and 'v=' in video_url:
+                                video_id = video_url.split('v=')[1].split('&')[0]
+                            ydl.download([video_url])
+                        
+                        # Check for subtitle file
+                        downloaded_subtitle_path = None
+                        for f in os.listdir(output_dir):
+                            if f.startswith(video_id) and f.endswith(".srt"):
+                                downloaded_subtitle_path = os.path.join(output_dir, f)
+                                break
+                        
+                        if downloaded_subtitle_path:
+                            shutil.move(downloaded_subtitle_path, output_path)
+                            return  # Success!
+                    except:
+                        pass  # Fall through to bot detection check
+                # If format fix didn't work, continue to bot detection handling
             if "bot" in error_msg or "sign in" in error_msg or "confirm" in error_msg:
                 if attempt < max_retries - 1:
                     wait_time = (attempt + 1) * 3  # Exponential backoff: 3s, 6s, 9s, 12s
