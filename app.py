@@ -201,8 +201,7 @@ def launch(args):
             
             <p style="font-size: 18px; color: #6b7280;">
             Provide a YouTube URL, then ask any question about the video content. 
-            The system will analyze the video and provide detailed answers. 
-            Deployed on Render with full network access - YouTube downloads work perfectly!
+            The system will analyze the video and provide detailed answers.
             </p>
             """
         )
