@@ -16,12 +16,29 @@ cookies_b64 = os.environ.get('YOUTUBE_COOKIES_B64')
 if cookies_b64:
     cookies_path = '/tmp/youtube_cookies.txt'
     try:
-        with open(cookies_path, 'wb') as f:
-            f.write(base64.b64decode(cookies_b64))
-        os.environ['YOUTUBE_COOKIES'] = cookies_path
-        print(f"✅ YouTube cookies loaded from base64")
+        # Decode base64 and write as text (cookies file should be text format)
+        decoded_cookies = base64.b64decode(cookies_b64)
+        # Try to decode as UTF-8, fallback to bytes if needed
+        try:
+            cookies_text = decoded_cookies.decode('utf-8')
+        except:
+            cookies_text = decoded_cookies.decode('latin-1')
+        
+        with open(cookies_path, 'w', encoding='utf-8') as f:
+            f.write(cookies_text)
+        
+        # Verify file exists and has content
+        if os.path.exists(cookies_path) and os.path.getsize(cookies_path) > 0:
+            os.environ['YOUTUBE_COOKIES'] = cookies_path
+            print(f"✅ YouTube cookies loaded from base64: {cookies_path} ({os.path.getsize(cookies_path)} bytes)")
+        else:
+            print(f"⚠️ Cookies file created but appears empty")
     except Exception as e:
-        print(f"⚠️ Failed to decode cookies: {e}")
+        print(f"⚠️ Failed to decode/load cookies: {e}")
+        import traceback
+        print(traceback.format_exc())
+else:
+    print("ℹ️ YOUTUBE_COOKIES_B64 not set - cookies will not be used")
 from dvd.dvd_core import DVDCoreAgent
 from dvd.video_utils import load_video, decode_video_to_frames, download_srt_subtitle
 from dvd.frame_caption import process_video, process_video_lite
