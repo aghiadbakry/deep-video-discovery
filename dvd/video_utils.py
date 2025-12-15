@@ -121,15 +121,6 @@ def download_srt_subtitle(video_url: str, output_path: str):
     output_dir = os.path.dirname(output_path)
     os.makedirs(output_dir, exist_ok=True)
 
-    max_retries = 5
-    player_clients = [
-        ['android'],  # First try: android only (most reliable)
-        ['ios'],  # Second try: ios
-        ['web'],  # Third try: web
-        ['android', 'web'],  # Fourth try: android + web
-        ['ios', 'android', 'web'],  # Fifth try: all clients
-    ]
-
     # Check for cookies file (optional - set YOUTUBE_COOKIES env var)
     cookies_file = os.environ.get('YOUTUBE_COOKIES', None)
     if cookies_file:
@@ -143,6 +134,27 @@ def download_srt_subtitle(video_url: str, output_path: str):
     else:
         cookies_file = None
         print("ℹ️ No cookies file specified (YOUTUBE_COOKIES env var not set)")
+
+    # IMPORTANT: When cookies are available, use 'web' client only
+    # Android/iOS clients don't support cookies!
+    if cookies_file:
+        # With cookies, only use web client (cookies don't work with android/ios)
+        max_retries = 3
+        player_clients = [
+            ['web'],  # Web client supports cookies
+            ['web'],  # Retry with web
+            ['web'],  # Final retry with web
+        ]
+    else:
+        # Without cookies, try different clients
+        max_retries = 5
+        player_clients = [
+            ['android'],  # First try: android only (most reliable)
+            ['ios'],  # Second try: ios
+            ['web'],  # Third try: web
+            ['android', 'web'],  # Fourth try: android + web
+            ['ios', 'android', 'web'],  # Fifth try: all clients
+        ]
 
     for attempt in range(max_retries):
         try:
