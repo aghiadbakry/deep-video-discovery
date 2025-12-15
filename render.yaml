@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: dvd-app
+    env: python
+    buildCommand: pip install -r requirements.txt && pip install gradio
+    startCommand: python app.py
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
+        # IMPORTANT: Set this value in Render Dashboard → Environment Variables
+        # Do NOT commit your API key to the repository
+      - key: VIDEO_DATABASE_FOLDER
+        value: /tmp/video_database/
+    plan: starter  # Use starter plan for better resources (or free for testing)
+    region: oregon  # Choose your preferred region
+    healthCheckPath: /
+    # Note: Render uses PORT environment variable automatically
+    # The app will detect Render and use the PORT env var
+
