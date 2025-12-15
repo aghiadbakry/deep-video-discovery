@@ -132,10 +132,17 @@ def download_srt_subtitle(video_url: str, output_path: str):
 
     # Check for cookies file (optional - set YOUTUBE_COOKIES env var)
     cookies_file = os.environ.get('YOUTUBE_COOKIES', None)
-    if cookies_file and os.path.exists(cookies_file):
+    if cookies_file:
         cookies_file = os.path.abspath(cookies_file)
+        if os.path.exists(cookies_file):
+            file_size = os.path.getsize(cookies_file)
+            print(f"🍪 Using cookies file: {cookies_file} ({file_size} bytes)")
+        else:
+            print(f"⚠️ Cookies file not found: {cookies_file}")
+            cookies_file = None
     else:
         cookies_file = None
+        print("ℹ️ No cookies file specified (YOUTUBE_COOKIES env var not set)")
 
     for attempt in range(max_retries):
         try:
@@ -165,6 +172,9 @@ def download_srt_subtitle(video_url: str, output_path: str):
             # Add cookies if available
             if cookies_file:
                 ydl_opts['cookiefile'] = cookies_file
+                print(f"🍪 Attempt {attempt + 1}: Using cookies for authentication")
+            else:
+                print(f"🔄 Attempt {attempt + 1}: No cookies available, using default method")
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 # Get info without processing formats (we only need subtitles)
