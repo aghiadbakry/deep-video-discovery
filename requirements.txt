@@ -4,7 +4,7 @@ tqdm
 nano-vectordb
 azure-identity
 requests
-yt-dlp
+yt-dlp>=2024.1.0
 openai
 python-dotenv
 gradio
