@@ -1,5 +1,6 @@
 import json
 import os, argparse, gradio as gr
+import base64
 from dvd import config
 
 # Load .env file if it exists (for local development)
@@ -9,6 +10,18 @@ try:
     load_dotenv()
 except ImportError:
     pass  # python-dotenv not installed, skip (Render uses platform env vars)
+
+# Handle base64-encoded cookies if provided (for Render environment variables)
+cookies_b64 = os.environ.get('YOUTUBE_COOKIES_B64')
+if cookies_b64:
+    cookies_path = '/tmp/youtube_cookies.txt'
+    try:
+        with open(cookies_path, 'wb') as f:
+            f.write(base64.b64decode(cookies_b64))
+        os.environ['YOUTUBE_COOKIES'] = cookies_path
+        print(f"✅ YouTube cookies loaded from base64")
+    except Exception as e:
+        print(f"⚠️ Failed to decode cookies: {e}")
 from dvd.dvd_core import DVDCoreAgent
 from dvd.video_utils import load_video, decode_video_to_frames, download_srt_subtitle
 from dvd.frame_caption import process_video, process_video_lite
