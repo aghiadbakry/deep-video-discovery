@@ -43,6 +43,7 @@ def load_video(
         if not _is_youtube_url(video_source):
             raise ValueError("Provided URL is not a valid YouTube link.")
 
+        # Enhanced yt-dlp options to avoid bot detection
         ydl_opts = {
             'format': (
                 f'bestvideo[height<={config.VIDEO_RESOLUTION}][ext=mp4]'
@@ -50,6 +51,16 @@ def load_video(
             ),
             'outtmpl': os.path.join(raw_video_dir, '%(id)s.%(ext)s'),
             'merge_output_format': 'mp4',
+            # Anti-bot detection options
+            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android', 'web'],  # Try android first, fallback to web
+                    'player_skip': ['webpage', 'configs'],
+                }
+            },
+            'quiet': False,
+            'no_warnings': False,
         }
         if with_subtitle:
             ydl_opts.update({
@@ -100,37 +111,87 @@ def load_video(
             shutil.copy2(subtitle_source, subtitle_destination)
 
 def download_srt_subtitle(video_url: str, output_path: str):
-    """Downloads an SRT subtitle from a YouTube URL."""
+    """Downloads an SRT subtitle from a YouTube URL with anti-bot detection."""
+    import time
+    from yt_dlp.utils import DownloadError, ExtractorError
+    
     if not _is_youtube_url(video_url):
         raise ValueError("Provided URL is not a valid YouTube link.")
 
     output_dir = os.path.dirname(output_path)
     os.makedirs(output_dir, exist_ok=True)
 
-    ydl_opts = {
-        'writesubtitles': True,
-        'subtitlesformat': 'srt',
-        'skip_download': True,
-        'writeautomaticsub': True,
-        'outtmpl': os.path.join(output_dir, '%(id)s.%(ext)s'),
-    }
+    max_retries = 3
+    player_clients = [
+        ['android', 'web'],  # First try: android + web
+        ['ios', 'android'],  # Second try: ios + android
+        ['web', 'ios', 'android'],  # Third try: all clients
+    ]
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(video_url, download=False)
-        video_id = info['id']
-        ydl.download([video_url])
+    for attempt in range(max_retries):
+        try:
+            # Enhanced yt-dlp options to avoid bot detection
+            ydl_opts = {
+                'writesubtitles': True,
+                'subtitlesformat': 'srt',
+                'skip_download': True,
+                'writeautomaticsub': True,
+                'outtmpl': os.path.join(output_dir, '%(id)s.%(ext)s'),
+                # Anti-bot detection options
+                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': player_clients[attempt % len(player_clients)],
+                        'player_skip': ['webpage', 'configs'],
+                    }
+                },
+                'quiet': False,
+                'no_warnings': False,
+            }
 
-    # Locate the downloaded subtitle file (yt-dlp names them as <id>.<lang>.srt)
-    downloaded_subtitle_path = None
-    for f in os.listdir(output_dir):
-        if f.startswith(video_id) and f.endswith(".srt"):
-            downloaded_subtitle_path = os.path.join(output_dir, f)
-            break
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(video_url, download=False)
+                video_id = info['id']
+                ydl.download([video_url])
 
-    if downloaded_subtitle_path:
-        shutil.move(downloaded_subtitle_path, output_path)
-    else:
-        raise FileNotFoundError(f"Could not find SRT subtitle for {video_url}")
+            # Locate the downloaded subtitle file (yt-dlp names them as <id>.<lang>.srt)
+            downloaded_subtitle_path = None
+            for f in os.listdir(output_dir):
+                if f.startswith(video_id) and f.endswith(".srt"):
+                    downloaded_subtitle_path = os.path.join(output_dir, f)
+                    break
+
+            if downloaded_subtitle_path:
+                shutil.move(downloaded_subtitle_path, output_path)
+                return  # Success!
+            else:
+                raise FileNotFoundError(f"Could not find SRT subtitle for {video_url}")
+                
+        except (DownloadError, ExtractorError) as e:
+            error_msg = str(e).lower()
+            if "bot" in error_msg or "sign in" in error_msg or "confirm" in error_msg:
+                if attempt < max_retries - 1:
+                    wait_time = (attempt + 1) * 2  # Exponential backoff: 2s, 4s
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    raise Exception(
+                        f"YouTube bot detection after {max_retries} attempts. "
+                        "This is a known issue with YouTube's anti-bot measures. "
+                        "Possible solutions:\n"
+                        "1. Try again in a few minutes\n"
+                        "2. Use a different video URL\n"
+                        "3. YouTube may be temporarily blocking requests from this IP"
+                    )
+            else:
+                # Re-raise other errors immediately
+                raise
+        except Exception as e:
+            if attempt < max_retries - 1:
+                time.sleep(2)
+                continue
+            else:
+                raise
 
 
 def decode_video_to_frames(video_path: str) -> str:
