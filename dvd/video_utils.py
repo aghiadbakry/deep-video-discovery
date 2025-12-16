@@ -215,15 +215,37 @@ def download_srt_subtitle(video_url: str, output_path: str):
                 print(f"🔍 Attempting direct subtitle extraction (bypassing format validation)...")
                 
                 with yt_dlp.YoutubeDL(info_opts) as ydl:
-                    # Extract info WITHOUT processing formats - this is key!
-                    # process=False means we don't validate formats, just get metadata
-                    info = ydl.extract_info(video_url, download=False, process=False)
-                    video_id = info.get('id') or info.get('display_id')
+                    # Try to extract info with processing to get subtitles
+                    # We'll catch format errors and ignore them
+                    info = None
+                    video_id = None
+                    
+                    try:
+                        # First try with process=True to get subtitles
+                        info = ydl.extract_info(video_url, download=False, process=True)
+                        video_id = info.get('id') or info.get('display_id')
+                        print(f"✅ Successfully extracted info with processing")
+                    except Exception as process_error:
+                        # If processing fails (likely format error), try without processing
+                        error_str = str(process_error).lower()
+                        if "format" in error_str or "not available" in error_str:
+                            print(f"⚠️ Format error during processing (expected), trying without processing...")
+                            try:
+                                info = ydl.extract_info(video_url, download=False, process=False)
+                                video_id = info.get('id') or info.get('display_id')
+                                print(f"✅ Extracted info without processing")
+                            except:
+                                pass
+                        else:
+                            raise
                     
                     if not video_id:
                         # Fallback: extract from URL
                         if 'v=' in video_url:
                             video_id = video_url.split('v=')[1].split('&')[0]
+                    
+                    if not info:
+                        raise ValueError("Could not extract video info")
                     
                     print(f"📹 Video ID: {video_id}")
                     
@@ -238,22 +260,81 @@ def download_srt_subtitle(video_url: str, output_path: str):
                     if 'automatic_captions' in info:
                         auto_captions = info['automatic_captions']
                     
-                    # Also check in player_response if available
+                    # CRITICAL: Manually parse player_response JSON to extract subtitle URLs
+                    # This is where YouTube actually stores subtitle data
                     if 'player_response' in info:
+                        import json
                         player_resp = info['player_response']
-                        if 'captions' in player_resp:
-                            captions = player_resp['captions']
-                            if 'playerCaptionsTracklistRenderer' in captions:
-                                tracks = captions['playerCaptionsTracklistRenderer'].get('captionTracks', [])
-                                for track in tracks:
-                                    lang = track.get('languageCode', 'unknown')
-                                    base_url = track.get('baseUrl')
-                                    if base_url:
-                                        if lang not in subtitles:
-                                            subtitles[lang] = []
-                                        subtitles[lang].append({'url': base_url, 'ext': 'vtt'})
+                        
+                        # player_response might be a string (JSON) or already a dict
+                        if isinstance(player_resp, str):
+                            try:
+                                player_resp = json.loads(player_resp)
+                            except:
+                                pass
+                        
+                        # Navigate the nested structure to find captions
+                        if isinstance(player_resp, dict):
+                            # Check captions.playerCaptionsTracklistRenderer.captionTracks
+                            captions = player_resp.get('captions', {})
+                            if isinstance(captions, dict):
+                                tracklist = captions.get('playerCaptionsTracklistRenderer', {})
+                                if isinstance(tracklist, dict):
+                                    tracks = tracklist.get('captionTracks', [])
+                                    for track in tracks:
+                                        if isinstance(track, dict):
+                                            lang = track.get('languageCode', 'unknown')
+                                            base_url = track.get('baseUrl')
+                                            if base_url:
+                                                if lang not in subtitles:
+                                                    subtitles[lang] = []
+                                                subtitles[lang].append({'url': base_url, 'ext': 'vtt'})
+                                    
+                                    # Also check for audio tracks (auto-captions)
+                                    audio_tracks = tracklist.get('audioTracks', [])
+                                    for track in audio_tracks:
+                                        if isinstance(track, dict):
+                                            lang = track.get('languageCode', 'unknown')
+                                            base_url = track.get('baseUrl')
+                                            if base_url:
+                                                if lang not in auto_captions:
+                                                    auto_captions[lang] = []
+                                                auto_captions[lang].append({'url': base_url, 'ext': 'vtt'})
+                    
+                    # Also try to get from initialData if available
+                    if 'initialData' in info:
+                        initial_data = info['initialData']
+                        if isinstance(initial_data, str):
+                            try:
+                                initial_data = json.loads(initial_data)
+                            except:
+                                pass
+                        
+                        if isinstance(initial_data, dict):
+                            # Navigate to captions in initialData structure
+                            contents = initial_data.get('contents', {})
+                            if isinstance(contents, dict):
+                                two_col = contents.get('twoColumnWatchNextResults', {})
+                                if isinstance(two_col, dict):
+                                    results = two_col.get('results', {})
+                                    if isinstance(results, dict):
+                                        results_content = results.get('results', {})
+                                        if isinstance(results_content, dict):
+                                            contents_list = results_content.get('contents', [])
+                                            for item in contents_list:
+                                                if isinstance(item, dict):
+                                                    video_primary = item.get('videoPrimaryInfoRenderer', {})
+                                                    if isinstance(video_primary, dict):
+                                                        # Look for captions here
+                                                        pass
                     
                     print(f"📝 Found {len(subtitles)} subtitle languages, {len(auto_captions)} auto-caption languages")
+                    
+                    # Debug: Print what we found
+                    if subtitles:
+                        print(f"📋 Subtitle languages: {list(subtitles.keys())}")
+                    if auto_captions:
+                        print(f"📋 Auto-caption languages: {list(auto_captions.keys())}")
                     
                     # Try to get English subtitles first
                     subtitle_url = None
