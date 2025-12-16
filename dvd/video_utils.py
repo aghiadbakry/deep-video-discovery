@@ -159,15 +159,17 @@ def download_srt_subtitle(video_url: str, output_path: str):
     for attempt in range(max_retries):
         try:
             # Enhanced yt-dlp options to avoid bot detection
-            # Since we only need subtitles, we skip video format selection entirely
+            # Since we only need subtitles (skip_download=True), we don't need to specify format
+            # Try without format first, then with format if needed
             ydl_opts = {
                 'writesubtitles': True,
                 'subtitlesformat': 'srt',
                 'skip_download': True,
                 'writeautomaticsub': True,
                 'outtmpl': os.path.join(output_dir, '%(id)s.%(ext)s'),
-                # Use flexible format selection - any available format since we skip download
-                'format': 'bestaudio/best/worst',  # Try best audio, then best, then worst
+                # Don't specify format - let yt-dlp choose since we skip download anyway
+                # This avoids "format not available" errors
+                'anti-bot-detection': True,  # Enable anti-bot features
                 # Anti-bot detection options
                 'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'referer': 'https://www.youtube.com/',
@@ -189,19 +191,39 @@ def download_srt_subtitle(video_url: str, output_path: str):
                 print(f"🔄 Attempt {attempt + 1}: No cookies available, using default method")
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                # Get info without processing formats (we only need subtitles)
+                # Extract video info - use process=True to get full info including subtitles
+                # But we skip download so formats don't matter
                 try:
+                    # First get basic info to extract video ID
                     info = ydl.extract_info(video_url, download=False, process=False)
                     video_id = info.get('id') or info.get('display_id')
-                except:
-                    # Fallback: extract video ID from URL
+                    if not video_id and 'v=' in video_url:
+                        video_id = video_url.split('v=')[1].split('&')[0]
+                except Exception as info_error:
+                    # If we can't get info, try to extract ID from URL
                     if 'v=' in video_url:
                         video_id = video_url.split('v=')[1].split('&')[0]
+                        print(f"⚠️ Could not extract info, using video ID from URL: {video_id}")
                     else:
-                        raise ValueError(f"Could not extract video ID from {video_url}")
+                        raise ValueError(f"Could not extract video ID: {info_error}")
                 
-                # Now download subtitles (this will process formats but we skip download)
-                ydl.download([video_url])
+                # Now download subtitles only
+                # Use download=True but skip_download=True means no video is downloaded
+                # Only subtitles will be written
+                try:
+                    ydl.download([video_url])
+                except Exception as download_error:
+                    # If download fails due to format, try extracting subtitles directly
+                    error_str = str(download_error).lower()
+                    if "format" in error_str:
+                        print(f"⚠️ Format error during download, trying alternative method...")
+                        # Try with no format at all
+                        ydl_opts_no_format = ydl_opts.copy()
+                        ydl_opts_no_format.pop('format', None)
+                        with yt_dlp.YoutubeDL(ydl_opts_no_format) as ydl2:
+                            ydl2.download([video_url])
+                    else:
+                        raise
 
             # Locate the downloaded subtitle file (yt-dlp names them as <id>.<lang>.srt)
             downloaded_subtitle_path = None
@@ -218,16 +240,18 @@ def download_srt_subtitle(video_url: str, output_path: str):
                 
         except (DownloadError, ExtractorError) as e:
             error_msg = str(e).lower()
-            # Handle format errors - try with more flexible format
+            # Handle format errors - try without format specification
             if "format is not available" in error_msg or "requested format" in error_msg:
                 if attempt < max_retries - 1:
-                    # Try with more permissive format
+                    # Try without format specification (let yt-dlp choose)
                     try:
-                        ydl_opts_flexible = ydl_opts.copy()
-                        # Use very permissive format selection
-                        ydl_opts_flexible['format'] = 'best[height<=480]/best/worst'
+                        ydl_opts_no_format = ydl_opts.copy()
+                        # Remove format requirement entirely
+                        ydl_opts_no_format.pop('format', None)
                         
-                        with yt_dlp.YoutubeDL(ydl_opts_flexible) as ydl:
+                        print(f"🔄 Retrying without format specification (attempt {attempt + 2})")
+                        
+                        with yt_dlp.YoutubeDL(ydl_opts_no_format) as ydl:
                             try:
                                 info = ydl.extract_info(video_url, download=False, process=False)
                                 video_id = info.get('id') or info.get('display_id')
@@ -247,9 +271,12 @@ def download_srt_subtitle(video_url: str, output_path: str):
                         
                         if downloaded_subtitle_path:
                             shutil.move(downloaded_subtitle_path, output_path)
-                            return  # Success with flexible format!
-                    except:
-                        pass  # Continue to normal error handling
+                            print(f"✅ Successfully downloaded subtitles without format specification")
+                            return  # Success!
+                    except Exception as format_fix_error:
+                        # Format fix didn't work, continue to normal error handling
+                        print(f"⚠️ Format fix attempt failed: {format_fix_error}")
+                        pass
             if "bot" in error_msg or "sign in" in error_msg or "confirm" in error_msg:
                 if attempt < max_retries - 1:
                     # Remove format requirement and try again
