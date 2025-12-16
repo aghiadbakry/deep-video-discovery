@@ -285,21 +285,40 @@ def download_srt_subtitle(video_url: str, output_path: str):
                     continue
                 else:
                     # Final attempt failed - provide helpful error message
-                    error_solution = (
-                        f"YouTube bot detection after {max_retries} attempts.\n\n"
-                        "**This is a known issue with YouTube's anti-bot measures.**\n\n"
-                        "**Immediate Solutions:**\n"
-                        "1. Wait 5-10 minutes and try again (YouTube rate limiting)\n"
-                        "2. Try a different video URL\n"
-                        "3. The video may have restricted access\n\n"
-                        "**Advanced Solution (Recommended for Production):**\n"
-                        "Use YouTube cookies to authenticate:\n"
-                        "1. Export cookies from your browser (see: https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp)\n"
-                        "2. Upload cookies file to Render\n"
-                        "3. Set environment variable: YOUTUBE_COOKIES=/path/to/cookies.txt\n\n"
-                        "**Note:** YouTube frequently updates their bot detection. "
-                        "This may require periodic updates to yt-dlp or using cookies."
-                    )
+                    # Check if cookies were used but expired
+                    if cookies_file:
+                        error_solution = (
+                            f"YouTube bot detection after {max_retries} attempts.\n\n"
+                            "**⚠️ Your cookies appear to be expired or invalid.**\n\n"
+                            "**The logs show:** 'The provided YouTube account cookies are no longer valid. "
+                            "They have likely been rotated in the browser as a security measure.'\n\n"
+                            "**Solution: Refresh Your Cookies**\n\n"
+                            "1. **Sign in to YouTube** in your browser (fresh login)\n"
+                            "2. **Export cookies immediately** using browser extension\n"
+                            "3. **Convert to base64** and update `YOUTUBE_COOKIES_B64` in Render\n"
+                            "4. **Redeploy** your service\n\n"
+                            "**Important:**\n"
+                            "- Export cookies RIGHT AFTER signing in (don't wait!)\n"
+                            "- Cookies expire quickly - YouTube rotates them for security\n"
+                            "- See `REFRESH_COOKIES.md` for detailed instructions\n\n"
+                            "**Alternative:** Wait 10-15 minutes and try again (YouTube rate limiting)"
+                        )
+                    else:
+                        error_solution = (
+                            f"YouTube bot detection after {max_retries} attempts.\n\n"
+                            "**This is a known issue with YouTube's anti-bot measures.**\n\n"
+                            "**Immediate Solutions:**\n"
+                            "1. Wait 5-10 minutes and try again (YouTube rate limiting)\n"
+                            "2. Try a different video URL\n"
+                            "3. The video may have restricted access\n\n"
+                            "**Recommended Solution:**\n"
+                            "Use YouTube cookies to authenticate:\n"
+                            "1. Export cookies from your browser (see: https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp)\n"
+                            "2. Convert to base64 and set `YOUTUBE_COOKIES_B64` in Render\n"
+                            "3. Redeploy your service\n\n"
+                            "**Note:** YouTube frequently updates their bot detection. "
+                            "This may require periodic updates to yt-dlp or using cookies."
+                        )
                     raise Exception(error_solution)
             else:
                 # Re-raise other errors immediately
