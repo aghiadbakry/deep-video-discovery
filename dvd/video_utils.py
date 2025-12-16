@@ -204,16 +204,62 @@ def download_srt_subtitle(video_url: str, output_path: str):
                     raise ValueError(f"Could not extract video ID from {video_url}")
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                # Try to extract subtitles directly from info first (avoids format issues)
+                try:
+                    # Get full info including subtitles
+                    info = ydl.extract_info(video_url, download=False, process=True)
+                    
+                    # Check if subtitles are available in the info
+                    if 'subtitles' in info or 'automatic_captions' in info:
+                        subtitles = info.get('subtitles', {})
+                        auto_captions = info.get('automatic_captions', {})
+                        
+                        # Try to get English subtitles
+                        subtitle_url = None
+                        if 'en' in subtitles:
+                            subtitle_url = subtitles['en'][0].get('url') if subtitles['en'] else None
+                        elif 'en' in auto_captions:
+                            subtitle_url = auto_captions['en'][0].get('url') if auto_captions['en'] else None
+                        elif subtitles:
+                            # Get first available subtitle
+                            first_lang = list(subtitles.keys())[0]
+                            subtitle_url = subtitles[first_lang][0].get('url') if subtitles[first_lang] else None
+                        elif auto_captions:
+                            first_lang = list(auto_captions.keys())[0]
+                            subtitle_url = auto_captions[first_lang][0].get('url') if auto_captions[first_lang] else None
+                        
+                        if subtitle_url:
+                            # Download subtitle directly from URL
+                            import requests
+                            response = requests.get(subtitle_url)
+                            if response.status_code == 200:
+                                with open(output_path, 'wb') as f:
+                                    f.write(response.content)
+                                print(f"✅ Downloaded subtitles directly from URL")
+                                return  # Success!
+                except Exception as direct_error:
+                    print(f"⚠️ Direct subtitle extraction failed: {direct_error}")
+                    # Fall back to download method
+                
                 # Download subtitles - even if format error occurs, subtitles may have been downloaded
                 try:
                     ydl.download([video_url])
                 except Exception as download_error:
                     # IMPORTANT: Check if subtitles were downloaded BEFORE the error
                     # Sometimes yt-dlp downloads subtitles but then fails on format validation
+                    # yt-dlp names subtitle files as: <video_id>.<lang>.srt (e.g., i2qSxMVeVLI.en.srt)
                     downloaded_subtitle_path = None
-                    for f in os.listdir(output_dir):
+                    
+                    # List all files for debugging
+                    all_files = os.listdir(output_dir)
+                    print(f"🔍 Checking for subtitle files in {output_dir}")
+                    print(f"📁 Files found: {all_files}")
+                    
+                    # Look for subtitle files - yt-dlp uses pattern: <video_id>.<lang>.srt
+                    for f in all_files:
                         if f.startswith(video_id) and f.endswith(".srt"):
                             downloaded_subtitle_path = os.path.join(output_dir, f)
+                            print(f"✅ Found subtitle file: {f}")
                             break
                     
                     if downloaded_subtitle_path:
@@ -230,23 +276,47 @@ def download_srt_subtitle(video_url: str, output_path: str):
                         ydl_opts_ignore = ydl_opts.copy()
                         ydl_opts_ignore['ignoreerrors'] = True
                         ydl_opts_ignore.pop('format', None)  # Remove format
-                        with yt_dlp.YoutubeDL(ydl_opts_ignore) as ydl2:
-                            ydl2.download([video_url])
+                        try:
+                            with yt_dlp.YoutubeDL(ydl_opts_ignore) as ydl2:
+                                ydl2.download([video_url])
+                            
+                            # Check again after ignoreerrors attempt
+                            for f in os.listdir(output_dir):
+                                if f.startswith(video_id) and f.endswith(".srt"):
+                                    downloaded_subtitle_path = os.path.join(output_dir, f)
+                                    break
+                            
+                            if downloaded_subtitle_path:
+                                shutil.move(downloaded_subtitle_path, output_path)
+                                print(f"✅ Subtitles downloaded with ignoreerrors")
+                                return
+                        except:
+                            pass  # Continue to outer exception handler
                     else:
                         # Re-raise non-format errors
                         raise
 
             # Locate the downloaded subtitle file (yt-dlp names them as <id>.<lang>.srt)
+            # List files for debugging
+            all_files = os.listdir(output_dir)
+            print(f"🔍 After download, checking for subtitle files in {output_dir}")
+            print(f"📁 Files found: {all_files}")
+            
             downloaded_subtitle_path = None
-            for f in os.listdir(output_dir):
+            for f in all_files:
                 if f.startswith(video_id) and f.endswith(".srt"):
                     downloaded_subtitle_path = os.path.join(output_dir, f)
+                    print(f"✅ Found subtitle file: {f}")
                     break
 
             if downloaded_subtitle_path:
                 shutil.move(downloaded_subtitle_path, output_path)
+                print(f"✅ Successfully moved subtitle file to {output_path}")
                 return  # Success!
             else:
+                # List what files actually exist for debugging
+                print(f"❌ No subtitle file found. Video ID: {video_id}")
+                print(f"📁 All files in {output_dir}: {os.listdir(output_dir)}")
                 raise FileNotFoundError(f"Could not find SRT subtitle for {video_url}")
                 
         except (DownloadError, ExtractorError) as e:
