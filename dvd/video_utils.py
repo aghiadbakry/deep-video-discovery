@@ -93,11 +93,15 @@ def download_srt_subtitle(video_url: str, output_path: str):
     """
     Downloads an SRT subtitle from a YouTube URL.
     
-    Uses yt-dlp's built-in subtitle download which handles all the complexity
-    internally - just like those YouTube downloader websites do!
+    Uses a hybrid approach:
+    1. First tries yt-dlp's built-in subtitle download
+    2. If format processing fails, extracts subtitle URLs without processing formats
+    3. Downloads subtitles directly using requests (bypasses format validation)
     """
     import time
+    import requests
     from yt_dlp.utils import DownloadError, ExtractorError
+    from http.cookiejar import MozillaCookieJar
     
     if not _is_youtube_url(video_url):
         raise ValueError("Provided URL is not a valid YouTube link.")
@@ -125,8 +129,6 @@ def download_srt_subtitle(video_url: str, output_path: str):
         cookies_file = None
         print("ℹ️ No cookies file specified (YOUTUBE_COOKIES env var not set)")
 
-    # SIMPLIFIED APPROACH: Let yt-dlp do what it does best!
-    # This is how YouTube downloader websites work - they use yt-dlp's built-in methods
     max_retries = 3
     
     # When cookies are available, use 'web' client only (cookies don't work with android/ios)
@@ -140,25 +142,22 @@ def download_srt_subtitle(video_url: str, output_path: str):
             ['web'],
         ]
 
+    # METHOD 1: Try yt-dlp's built-in subtitle download first
     for attempt in range(max_retries):
         try:
-            print(f"🔄 Attempt {attempt + 1}/{max_retries}: Downloading subtitles...")
+            print(f"🔄 Attempt {attempt + 1}/{max_retries}: Trying yt-dlp subtitle download...")
             
-            # Simple, clean yt-dlp options - let it handle everything!
             ydl_opts = {
                 'writesubtitles': True,
                 'subtitlesformat': 'srt',
-                'skip_download': True,  # We only want subtitles, not video
-                'writeautomaticsub': True,  # Get auto-generated subtitles too
+                'skip_download': True,
+                'writeautomaticsub': True,
                 'outtmpl': os.path.join(output_dir, '%(id)s.%(ext)s'),
-                # NO format specification - yt-dlp will handle it since we skip download
-                # This is key! Don't specify format when we only need subtitles
                 'ignoreerrors': False,
                 'no_warnings': False,
                 'quiet': False,
             }
             
-            # Add cookies if available
             if cookies_file:
                 ydl_opts['cookiefile'] = cookies_file
                 ydl_opts['extractor_args'] = {
@@ -173,29 +172,24 @@ def download_srt_subtitle(video_url: str, output_path: str):
                     }
                 }
             
-            # Let yt-dlp do its magic - it knows how to download subtitles!
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                # This will download subtitles and handle all the complexity internally
                 ydl.download([video_url])
 
             # Check for downloaded subtitle file
-            # yt-dlp names them as: <video_id>.<lang>.srt (e.g., i2qSxMVeVLI.en.srt)
             downloaded_subtitle_path = None
             for f in os.listdir(output_dir):
                 if f.startswith(video_id) and f.endswith(".srt"):
                     downloaded_subtitle_path = os.path.join(output_dir, f)
                     file_size = os.path.getsize(downloaded_subtitle_path)
-                    if file_size > 0:  # Make sure it's not empty
+                    if file_size > 0:
                         print(f"✅ Found subtitle file: {f} ({file_size} bytes)")
-                        break
+                        shutil.move(downloaded_subtitle_path, output_path)
+                        print(f"✅ Successfully downloaded subtitles to {output_path}")
+                        return  # Success!
             
-            if downloaded_subtitle_path:
-                # Move to the desired output path
-                shutil.move(downloaded_subtitle_path, output_path)
-                print(f"✅ Successfully downloaded subtitles to {output_path}")
-                return  # Success!
-            else:
-                raise FileNotFoundError(f"Subtitle file not found after download attempt {attempt + 1}")
+            # If no file found, continue to alternative method
+            print(f"⚠️ No subtitle file found, trying alternative method...")
+            break
                 
         except (DownloadError, ExtractorError) as e:
             error_msg = str(e).lower()
@@ -209,10 +203,13 @@ def download_srt_subtitle(video_url: str, output_path: str):
                         print(f"✅ Subtitles downloaded successfully (error occurred but subtitles are available)")
                         return  # Success!
             
-            # Handle specific errors
-            if "bot" in error_msg or "sign in" in error_msg or "confirm" in error_msg:
+            # If format error, try alternative method immediately
+            if "format" in error_msg or "not available" in error_msg:
+                print(f"⚠️ Format error detected, switching to alternative method...")
+                break
+            elif "bot" in error_msg or "sign in" in error_msg or "confirm" in error_msg:
                 if attempt < max_retries - 1:
-                    wait_time = (attempt + 1) * 3  # Exponential backoff
+                    wait_time = (attempt + 1) * 3
                     print(f"⚠️ Bot detection (attempt {attempt + 1}), waiting {wait_time}s before retry...")
                     time.sleep(wait_time)
                     continue
@@ -226,34 +223,200 @@ def download_srt_subtitle(video_url: str, output_path: str):
                         "See DEPLOY.md for cookie setup instructions."
                     )
                     raise Exception(error_solution)
-            elif "format" in error_msg or "not available" in error_msg:
-                # Format errors shouldn't matter since we skip download
-                # But if they do, try with ignoreerrors
-                if attempt < max_retries - 1:
-                    print(f"⚠️ Format error (unexpected), trying with ignoreerrors...")
-                    ydl_opts['ignoreerrors'] = True
-                    continue
-                else:
-                    raise Exception(f"Subtitle download failed: {e}")
             else:
-                # Other errors - retry
                 if attempt < max_retries - 1:
                     print(f"⚠️ Error occurred, retrying... ({error_msg[:100]})")
                     time.sleep(3)
                     continue
                 else:
-                    raise
-                    
+                    # Try alternative method
+                    break
         except Exception as e:
             if attempt < max_retries - 1:
                 print(f"⚠️ Unexpected error, retrying... ({str(e)[:100]})")
                 time.sleep(3)
                 continue
             else:
+                # Try alternative method
+                break
+
+    # METHOD 2: Extract subtitle URLs WITHOUT format processing, then download directly
+    print(f"🔄 Trying alternative method: Extract subtitle URLs without format processing...")
+    
+    for attempt in range(max_retries):
+        try:
+            # Extract info WITHOUT processing formats (this avoids format errors)
+            info_opts = {
+                'quiet': False,
+                'no_warnings': False,
+                'skip_download': True,
+            }
+            
+            if cookies_file:
+                info_opts['cookiefile'] = cookies_file
+                info_opts['extractor_args'] = {
+                    'youtube': {
+                        'player_client': player_clients[attempt % len(player_clients)],
+                    }
+                }
+            else:
+                info_opts['extractor_args'] = {
+                    'youtube': {
+                        'player_client': player_clients[attempt % len(player_clients)],
+                    }
+                }
+            
+            with yt_dlp.YoutubeDL(info_opts) as ydl:
+                # Extract info WITHOUT processing formats - this gets subtitle URLs without format validation
+                info = ydl.extract_info(video_url, download=False, process=False)
+            
+            # Extract subtitle URLs from info dict
+            subtitles = info.get('subtitles', {})
+            automatic_captions = info.get('automatic_captions', {})
+            
+            # Combine both subtitle sources
+            all_subtitles = {}
+            all_subtitles.update(subtitles)
+            all_subtitles.update(automatic_captions)
+            
+            if not all_subtitles:
+                raise ValueError("No subtitles found in video info")
+            
+            # Prefer English, but use any available language
+            preferred_langs = ['en', 'en-US', 'en-GB']
+            subtitle_url = None
+            subtitle_lang = None
+            
+            for lang in preferred_langs:
+                if lang in all_subtitles:
+                    # Get the first subtitle URL (usually SRT or VTT)
+                    subtitle_list = all_subtitles[lang]
+                    if subtitle_list and len(subtitle_list) > 0:
+                        subtitle_url = subtitle_list[0].get('url')
+                        subtitle_lang = lang
+                        break
+            
+            # If no preferred language, use the first available
+            if not subtitle_url:
+                for lang, subtitle_list in all_subtitles.items():
+                    if subtitle_list and len(subtitle_list) > 0:
+                        subtitle_url = subtitle_list[0].get('url')
+                        subtitle_lang = lang
+                        break
+            
+            if not subtitle_url:
+                raise ValueError("No subtitle URL found in video info")
+            
+            print(f"✅ Found subtitle URL for language: {subtitle_lang}")
+            
+            # Download subtitle directly using requests
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': '*/*',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Referer': 'https://www.youtube.com/',
+            }
+            
+            # Load cookies if available
+            session = requests.Session()
+            if cookies_file:
+                try:
+                    jar = MozillaCookieJar(cookies_file)
+                    jar.load(ignore_discard=True, ignore_expires=True)
+                    session.cookies = jar
+                    print(f"🍪 Using cookies for subtitle download ({len(session.cookies)} cookies)")
+                except Exception as cookie_error:
+                    print(f"⚠️ Could not load cookies: {cookie_error}")
+            
+            # Download subtitle content
+            response = session.get(subtitle_url, headers=headers, timeout=30)
+            response.raise_for_status()
+            
+            subtitle_content = response.text
+            if not subtitle_content or len(subtitle_content.strip()) == 0:
+                raise ValueError("Subtitle content is empty")
+            
+            # Check if it's VTT format and convert to SRT if needed
+            if subtitle_url.endswith('.vtt') or 'fmt=vtt' in subtitle_url or subtitle_content.strip().startswith('WEBVTT'):
+                print(f"🔄 Converting VTT to SRT format...")
+                subtitle_content = _convert_vtt_to_srt(subtitle_content)
+            
+            # Write subtitle file
+            with open(output_path, 'w', encoding='utf-8') as f:
+                f.write(subtitle_content)
+            
+            file_size = os.path.getsize(output_path)
+            print(f"✅ Successfully downloaded subtitles to {output_path} ({file_size} bytes)")
+            return  # Success!
+            
+        except Exception as e:
+            error_msg = str(e).lower()
+            if attempt < max_retries - 1:
+                print(f"⚠️ Alternative method failed (attempt {attempt + 1}), retrying... ({str(e)[:100]})")
+                time.sleep(3)
+                continue
+            else:
                 raise FileNotFoundError(f"Could not download SRT subtitle for {video_url}: {e}")
 
-    # If we get here, all retries failed
+    # If we get here, all methods failed
     raise FileNotFoundError(f"Could not find SRT subtitle for {video_url} after {max_retries} attempts")
+
+
+def _convert_vtt_to_srt(vtt_content: str) -> str:
+    """Convert WebVTT format to SRT format."""
+    lines = vtt_content.strip().split('\n')
+    srt_lines = []
+    subtitle_index = 1
+    i = 0
+    
+    # Skip WebVTT header and metadata
+    while i < len(lines):
+        line = lines[i].strip()
+        if line == 'WEBVTT' or line.startswith('WEBVTT'):
+            i += 1
+            # Skip metadata lines (until we hit a blank line)
+            while i < len(lines) and lines[i].strip() != '':
+                i += 1
+            i += 1  # Skip blank line
+            break
+        i += 1
+    
+    # Parse subtitle entries
+    while i < len(lines):
+        line = lines[i].strip()
+        
+        # Skip empty lines
+        if not line:
+            i += 1
+            continue
+        
+        # Check if this is a timestamp line
+        if '-->' in line:
+            # This is a timestamp line
+            # Convert VTT timestamp to SRT format (replace . with ,)
+            timestamp = line.replace('.', ',')
+            
+            # Get the subtitle text (next non-empty lines until blank line)
+            subtitle_text = []
+            i += 1
+            while i < len(lines) and lines[i].strip() != '':
+                text_line = lines[i].strip()
+                # Remove VTT cue settings (like position, align, etc.)
+                if not text_line.startswith(('<', '&')):
+                    subtitle_text.append(text_line)
+                i += 1
+            
+            if subtitle_text:
+                # Write SRT entry
+                srt_lines.append(str(subtitle_index))
+                srt_lines.append(timestamp)
+                srt_lines.append('\n'.join(subtitle_text))
+                srt_lines.append('')  # Blank line between entries
+                subtitle_index += 1
+        else:
+            i += 1
+    
+    return '\n'.join(srt_lines)
 
 
 def decode_video_to_frames(video_path: str) -> str:
