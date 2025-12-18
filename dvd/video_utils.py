@@ -279,8 +279,13 @@ def download_srt_subtitle(video_url: str, output_path: str):
             all_subtitles.update(subtitles)
             all_subtitles.update(automatic_captions)
             
+            # If no subtitles in info dict, try extracting from webpage HTML
             if not all_subtitles:
-                raise ValueError("No subtitles found in video info")
+                print(f"⚠️ No subtitles in info dict, trying to extract from webpage...")
+                all_subtitles = _extract_subtitles_from_webpage(video_url, cookies_file, player_clients[attempt % len(player_clients)])
+            
+            if not all_subtitles:
+                raise ValueError("No subtitles found in video info or webpage")
             
             # Prefer English, but use any available language
             preferred_langs = ['en', 'en-US', 'en-GB']
@@ -360,6 +365,104 @@ def download_srt_subtitle(video_url: str, output_path: str):
 
     # If we get here, all methods failed
     raise FileNotFoundError(f"Could not find SRT subtitle for {video_url} after {max_retries} attempts")
+
+
+def _extract_subtitles_from_webpage(video_url: str, cookies_file: str | None, player_client: list) -> dict:
+    """Extract subtitle URLs directly from YouTube webpage HTML."""
+    import re
+    import json
+    
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://www.youtube.com/',
+        }
+        
+        # Load cookies if available
+        session = requests.Session()
+        if cookies_file:
+            try:
+                jar = MozillaCookieJar(cookies_file)
+                jar.load(ignore_discard=True, ignore_expires=True)
+                session.cookies = jar
+            except Exception:
+                pass
+        
+        # Download the YouTube webpage
+        response = session.get(video_url, headers=headers, timeout=30)
+        response.raise_for_status()
+        webpage = response.text
+        
+        # Extract player_response from webpage
+        # YouTube embeds this in various ways
+        patterns = [
+            r'var ytInitialPlayerResponse = ({.+?});',
+            r'ytInitialPlayerResponse\s*=\s*({.+?});',
+            r'"playerResponse":({.+?})',
+            r'ytInitialPlayerResponse\s*=\s*({.+?});\s*var',
+        ]
+        
+        player_response = None
+        for pattern in patterns:
+            match = re.search(pattern, webpage, re.DOTALL)
+            if match:
+                try:
+                    player_response_str = match.group(1)
+                    player_response = json.loads(player_response_str)
+                    print(f"✅ Found player_response in webpage")
+                    break
+                except (json.JSONDecodeError, IndexError):
+                    continue
+        
+        if not player_response:
+            print(f"⚠️ Could not extract player_response from webpage")
+            return {}
+        
+        # Extract subtitles from player_response
+        subtitles = {}
+        
+        # Check captions in player_response
+        captions = player_response.get('captions', {})
+        if captions:
+            tracklist = captions.get('playerCaptionsTracklistRenderer', {})
+            if tracklist:
+                tracks = tracklist.get('captionTracks', [])
+                for track in tracks:
+                    lang = track.get('languageCode', 'unknown')
+                    base_url = track.get('baseUrl')
+                    if base_url:
+                        if lang not in subtitles:
+                            subtitles[lang] = []
+                        subtitles[lang].append({
+                            'url': base_url,
+                            'ext': 'vtt'
+                        })
+        
+        # Check automatic captions
+        auto_tracks = tracklist.get('audioTracks', []) if tracklist else []
+        for track in auto_tracks:
+            lang = track.get('languageCode', 'unknown')
+            base_url = track.get('baseUrl')
+            if base_url:
+                if lang not in subtitles:
+                    subtitles[lang] = []
+                subtitles[lang].append({
+                    'url': base_url,
+                    'ext': 'vtt'
+                })
+        
+        if subtitles:
+            print(f"✅ Extracted {len(subtitles)} subtitle languages from webpage")
+        else:
+            print(f"⚠️ No subtitles found in player_response")
+        
+        return subtitles
+        
+    except Exception as e:
+        print(f"⚠️ Error extracting subtitles from webpage: {e}")
+        return {}
 
 
 def _convert_vtt_to_srt(vtt_content: str) -> str:
