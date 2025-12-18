@@ -170,7 +170,10 @@ def download_srt_subtitle(video_url: str, output_path: str):
     except Exception as e:
         # Check if it's a RequestBlocked error (IP blocking)
         error_str = str(e).lower()
-        if 'requestblocked' in error_str or 'ip' in error_str or 'blocked' in error_str:
+        error_type = type(e).__name__
+        
+        # Check for IP blocking errors
+        if 'requestblocked' in error_str or (error_type == 'RequestBlocked') or ('ip' in error_str and 'blocked' in error_str):
             error_msg = (
                 f"YouTube is blocking requests from this IP (cloud provider IP).\n\n"
                 f"**Solution:** Set proxy credentials via environment variables:\n"
@@ -180,18 +183,30 @@ def download_srt_subtitle(video_url: str, output_path: str):
             )
             raise FileNotFoundError(error_msg)
         else:
+            # Other errors - just pass through the original error message
             raise FileNotFoundError(f"Could not download SRT subtitle for {video_url}: {e}")
 
 
 def _convert_transcript_to_srt(transcript_data: list) -> str:
-    """Convert YouTube transcript API data to SRT format."""
+    """Convert YouTube transcript API data to SRT format.
+    
+    Handles both dictionary format and FetchedTranscriptSnippet objects.
+    """
     srt_lines = []
     
     for index, entry in enumerate(transcript_data, start=1):
-        start_time = entry['start']
-        duration = entry.get('duration', 0)
+        # Handle both dict and object formats
+        if isinstance(entry, dict):
+            start_time = entry['start']
+            duration = entry.get('duration', 0)
+            text = entry['text'].strip()
+        else:
+            # FetchedTranscriptSnippet object - use attributes
+            start_time = entry.start
+            duration = getattr(entry, 'duration', 0)
+            text = entry.text.strip()
+        
         end_time = start_time + duration
-        text = entry['text'].strip()
         
         # Convert seconds to SRT timestamp format (HH:MM:SS,mmm)
         start_srt = _seconds_to_srt_timestamp(start_time)
