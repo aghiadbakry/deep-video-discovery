@@ -1,15 +1,11 @@
 import os
 import shutil
+import yt_dlp
+from typing import Dict
 from urllib.parse import urlparse
 
-import cv2
-import yt_dlp
-
-import dvd.config as config
-
-
 def _is_youtube_url(url: str) -> bool:
-    """Checks if a URL is a valid YouTube URL."""
+    """Check if URL is a YouTube link."""
     parsed_url = urlparse(url)
     return parsed_url.netloc.lower().endswith(('youtube.com', 'youtu.be'))
 
@@ -20,22 +16,12 @@ def load_video(
     subtitle_source: str | None = None,
 ) -> str:
     """
-    Loads a video from YouTube or a local file into the video database.
-    Subtitle support is limited to the SRT format only.
-
-    Args:
-        video_source: YouTube URL or local video file path.
-        with_subtitle: If True, also downloads / copies subtitles (SRT only).
-        subtitle_source: Language code for YouTube subtitles (e.g., 'en', 'auto')
-                         or local *.srt file path when video_source is local.
-
-    Returns:
-        Absolute path to the video file stored in the database.
-
-    Raises:
-        ValueError, FileNotFoundError: On invalid inputs.
+    Load video from YouTube URL or local file path.
+    Returns the path to the downloaded/loaded video file.
     """
-    raw_video_dir = os.path.join(config.VIDEO_DATABASE_FOLDER, 'raw')
+    from dvd import config
+
+    raw_video_dir = os.path.join(config.VIDEO_DATABASE_FOLDER, "raw")
     os.makedirs(raw_video_dir, exist_ok=True)
 
     # ------------------- YouTube source -------------------
@@ -87,36 +73,30 @@ def load_video(
         return os.path.abspath(video_path)
 
     # ------------------- Local source -------------------
-    if os.path.exists(video_source):
-        if not os.path.isfile(video_source):
-            raise ValueError(f"Source path '{video_source}' is a directory, not a file.")
+    elif os.path.isfile(video_source):
+        video_id = os.path.splitext(os.path.basename(video_source))[0]
+        video_destination = os.path.join(raw_video_dir, f"{video_id}.mp4")
+        os.makedirs(os.path.dirname(video_destination), exist_ok=True)
+        shutil.copy2(video_source, video_destination)
 
-        filename = os.path.basename(video_source)
-        destination_path = os.path.join(raw_video_dir, filename)
-        shutil.copy2(video_source, destination_path)
-
-        # copy subtitle file if requested (must be *.srt) and rename
-        if with_subtitle:
-            if not subtitle_source:
-                raise ValueError("subtitle_source must be provided for local videos.")
-            if not subtitle_source.lower().endswith('.srt'):
-                raise ValueError("Only SRT subtitle files are supported for local videos.")
-            if not os.path.isfile(subtitle_source):
-                raise FileNotFoundError(f"Subtitle file '{subtitle_source}' not found.")
-
-            subtitle_destination = os.path.join(
-                raw_video_dir,
-                f"{os.path.splitext(filename)[0]}.srt",
-            )
+        if with_subtitle and subtitle_source:
+            subtitle_destination = f"{os.path.splitext(video_destination)[0]}.srt"
+            os.makedirs(os.path.dirname(subtitle_destination), exist_ok=True)
             shutil.copy2(subtitle_source, subtitle_destination)
 
+        return os.path.abspath(video_destination)
+    else:
+        raise ValueError(f"Video source '{video_source}' is not a valid URL or file path.")
+
+
 def download_srt_subtitle(video_url: str, output_path: str):
-    """Downloads an SRT subtitle from a YouTube URL with anti-bot detection.
+    """
+    Downloads an SRT subtitle from a YouTube URL.
     
-    Uses direct subtitle URL extraction to avoid format validation issues.
+    Uses yt-dlp's built-in subtitle download which handles all the complexity
+    internally - just like those YouTube downloader websites do!
     """
     import time
-    import requests
     from yt_dlp.utils import DownloadError, ExtractorError
     
     if not _is_youtube_url(video_url):
@@ -124,6 +104,12 @@ def download_srt_subtitle(video_url: str, output_path: str):
 
     output_dir = os.path.dirname(output_path)
     os.makedirs(output_dir, exist_ok=True)
+
+    # Extract video ID from URL
+    if 'v=' in video_url:
+        video_id = video_url.split('v=')[1].split('&')[0]
+    else:
+        raise ValueError(f"Could not extract video ID from {video_url}")
 
     # Check for cookies file (optional - set YOUTUBE_COOKIES env var)
     cookies_file = os.environ.get('YOUTUBE_COOKIES', None)
@@ -139,545 +125,172 @@ def download_srt_subtitle(video_url: str, output_path: str):
         cookies_file = None
         print("ℹ️ No cookies file specified (YOUTUBE_COOKIES env var not set)")
 
-    # IMPORTANT: When cookies are available, use 'web' client only
-    # Android/iOS clients don't support cookies!
+    # SIMPLIFIED APPROACH: Let yt-dlp do what it does best!
+    # This is how YouTube downloader websites work - they use yt-dlp's built-in methods
+    max_retries = 3
+    
+    # When cookies are available, use 'web' client only (cookies don't work with android/ios)
     if cookies_file:
-        # With cookies, only use web client (cookies don't work with android/ios)
-        max_retries = 3
-        player_clients = [
-            ['web'],  # Web client supports cookies
-            ['web'],  # Retry with web
-            ['web'],  # Final retry with web
-        ]
+        player_clients = [['web']] * max_retries
     else:
         # Without cookies, try different clients
-        max_retries = 5
         player_clients = [
-            ['android'],  # First try: android only (most reliable)
-            ['ios'],  # Second try: ios
-            ['web'],  # Third try: web
-            ['android', 'web'],  # Fourth try: android + web
-            ['ios', 'android', 'web'],  # Fifth try: all clients
+            ['android'],  # Most reliable without cookies
+            ['ios'],
+            ['web'],
         ]
 
     for attempt in range(max_retries):
         try:
-            # Enhanced yt-dlp options to avoid bot detection
-            # Since we only need subtitles (skip_download=True), we don't need to specify format
-            # Try without format first, then with format if needed
+            print(f"🔄 Attempt {attempt + 1}/{max_retries}: Downloading subtitles...")
+            
+            # Simple, clean yt-dlp options - let it handle everything!
             ydl_opts = {
                 'writesubtitles': True,
                 'subtitlesformat': 'srt',
-                'skip_download': True,
-                'writeautomaticsub': True,
+                'skip_download': True,  # We only want subtitles, not video
+                'writeautomaticsub': True,  # Get auto-generated subtitles too
                 'outtmpl': os.path.join(output_dir, '%(id)s.%(ext)s'),
-                # Since we only need subtitles, use a format that always exists
-                # 'worst' format is always available, and we skip download anyway
-                'format': 'worst',  # Use worst format (we don't download it anyway)
+                # NO format specification - yt-dlp will handle it since we skip download
+                # This is key! Don't specify format when we only need subtitles
                 'ignoreerrors': False,
-                # Anti-bot detection options
-                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'referer': 'https://www.youtube.com/',
-                'extractor_args': {
-                    'youtube': {
-                        'player_client': player_clients[attempt % len(player_clients)],
-                        'player_skip': ['webpage', 'configs'],
-                    }
-                },
-                'quiet': False,
                 'no_warnings': False,
+                'quiet': False,
             }
             
             # Add cookies if available
             if cookies_file:
                 ydl_opts['cookiefile'] = cookies_file
-                print(f"🍪 Attempt {attempt + 1}: Using cookies for authentication")
-            else:
-                print(f"🔄 Attempt {attempt + 1}: No cookies available, using default method")
-
-            # ALTERNATIVE APPROACH: Extract subtitles directly from info WITHOUT format processing
-            # This completely bypasses format validation issues
-            try:
-                # Create minimal options just for info extraction (no format processing)
-                info_opts = {
-                    'quiet': False,
-                    'no_warnings': False,
-                    'skip_download': True,  # We don't need to download video
-                }
-                if cookies_file:
-                    info_opts['cookiefile'] = cookies_file
-                    info_opts['extractor_args'] = {
-                        'youtube': {
-                            'player_client': ['web'],  # Web client supports cookies
-                        }
+                ydl_opts['extractor_args'] = {
+                    'youtube': {
+                        'player_client': player_clients[attempt % len(player_clients)],
                     }
-                
-                print(f"🔍 Attempting direct subtitle extraction (bypassing format validation)...")
-                
-                with yt_dlp.YoutubeDL(info_opts) as ydl:
-                    # Try to extract info with processing to get subtitles
-                    # We'll catch format errors and ignore them
-                    info = None
-                    video_id = None
-                    
-                    try:
-                        # First try with process=True to get subtitles
-                        info = ydl.extract_info(video_url, download=False, process=True)
-                        video_id = info.get('id') or info.get('display_id')
-                        print(f"✅ Successfully extracted info with processing")
-                    except Exception as process_error:
-                        # If processing fails (likely format error), try without processing
-                        error_str = str(process_error).lower()
-                        if "format" in error_str or "not available" in error_str:
-                            print(f"⚠️ Format error during processing (expected), trying without processing...")
-                            try:
-                                info = ydl.extract_info(video_url, download=False, process=False)
-                                video_id = info.get('id') or info.get('display_id')
-                                print(f"✅ Extracted info without processing")
-                            except:
-                                pass
-                        else:
-                            raise
-                    
-                    if not video_id:
-                        # Fallback: extract from URL
-                        if 'v=' in video_url:
-                            video_id = video_url.split('v=')[1].split('&')[0]
-                    
-                    if not info:
-                        raise ValueError("Could not extract video info")
-                    
-                    print(f"📹 Video ID: {video_id}")
-                    
-                    # Now manually extract subtitle URLs from the raw info
-                    # yt-dlp stores subtitles in different places depending on extractor
-                    subtitles = {}
-                    auto_captions = {}
-                    
-                    # Try to get subtitles from various possible locations in info dict
-                    if 'subtitles' in info:
-                        subtitles = info['subtitles']
-                    if 'automatic_captions' in info:
-                        auto_captions = info['automatic_captions']
-                    
-                    # CRITICAL: Manually parse player_response JSON to extract subtitle URLs
-                    # This is where YouTube actually stores subtitle data
-                    if 'player_response' in info:
-                        import json
-                        player_resp = info['player_response']
-                        
-                        # player_response might be a string (JSON) or already a dict
-                        if isinstance(player_resp, str):
-                            try:
-                                player_resp = json.loads(player_resp)
-                            except:
-                                pass
-                        
-                        # Navigate the nested structure to find captions
-                        if isinstance(player_resp, dict):
-                            # Check captions.playerCaptionsTracklistRenderer.captionTracks
-                            captions = player_resp.get('captions', {})
-                            if isinstance(captions, dict):
-                                tracklist = captions.get('playerCaptionsTracklistRenderer', {})
-                                if isinstance(tracklist, dict):
-                                    tracks = tracklist.get('captionTracks', [])
-                                    for track in tracks:
-                                        if isinstance(track, dict):
-                                            lang = track.get('languageCode', 'unknown')
-                                            base_url = track.get('baseUrl')
-                                            if base_url:
-                                                if lang not in subtitles:
-                                                    subtitles[lang] = []
-                                                subtitles[lang].append({'url': base_url, 'ext': 'vtt'})
-                                    
-                                    # Also check for audio tracks (auto-captions)
-                                    audio_tracks = tracklist.get('audioTracks', [])
-                                    for track in audio_tracks:
-                                        if isinstance(track, dict):
-                                            lang = track.get('languageCode', 'unknown')
-                                            base_url = track.get('baseUrl')
-                                            if base_url:
-                                                if lang not in auto_captions:
-                                                    auto_captions[lang] = []
-                                                auto_captions[lang].append({'url': base_url, 'ext': 'vtt'})
-                    
-                    # Also try to get from initialData if available
-                    if 'initialData' in info:
-                        initial_data = info['initialData']
-                        if isinstance(initial_data, str):
-                            try:
-                                initial_data = json.loads(initial_data)
-                            except:
-                                pass
-                        
-                        if isinstance(initial_data, dict):
-                            # Navigate to captions in initialData structure
-                            contents = initial_data.get('contents', {})
-                            if isinstance(contents, dict):
-                                two_col = contents.get('twoColumnWatchNextResults', {})
-                                if isinstance(two_col, dict):
-                                    results = two_col.get('results', {})
-                                    if isinstance(results, dict):
-                                        results_content = results.get('results', {})
-                                        if isinstance(results_content, dict):
-                                            contents_list = results_content.get('contents', [])
-                                            for item in contents_list:
-                                                if isinstance(item, dict):
-                                                    video_primary = item.get('videoPrimaryInfoRenderer', {})
-                                                    if isinstance(video_primary, dict):
-                                                        # Look for captions here
-                                                        pass
-                    
-                    print(f"📝 Found {len(subtitles)} subtitle languages, {len(auto_captions)} auto-caption languages")
-                    
-                    # Debug: Print what we found
-                    if subtitles:
-                        print(f"📋 Subtitle languages: {list(subtitles.keys())}")
-                    if auto_captions:
-                        print(f"📋 Auto-caption languages: {list(auto_captions.keys())}")
-                    
-                    # Try to get English subtitles first
-                    subtitle_url = None
-                    subtitle_ext = 'srt'
-                    
-                    if 'en' in subtitles and subtitles['en']:
-                        subtitle_info = subtitles['en'][0] if isinstance(subtitles['en'], list) else subtitles['en']
-                        subtitle_url = subtitle_info.get('url') if isinstance(subtitle_info, dict) else None
-                        if subtitle_url and isinstance(subtitle_info, dict):
-                            subtitle_ext = subtitle_info.get('ext', 'vtt')
-                    elif 'en' in auto_captions and auto_captions['en']:
-                        subtitle_info = auto_captions['en'][0] if isinstance(auto_captions['en'], list) else auto_captions['en']
-                        subtitle_url = subtitle_info.get('url') if isinstance(subtitle_info, dict) else None
-                        if subtitle_url and isinstance(subtitle_info, dict):
-                            subtitle_ext = subtitle_info.get('ext', 'vtt')
-                    elif subtitles:
-                        # Get first available subtitle
-                        first_lang = list(subtitles.keys())[0]
-                        subtitle_info = subtitles[first_lang][0] if isinstance(subtitles[first_lang], list) else subtitles[first_lang]
-                        subtitle_url = subtitle_info.get('url') if isinstance(subtitle_info, dict) else None
-                        if subtitle_url and isinstance(subtitle_info, dict):
-                            subtitle_ext = subtitle_info.get('ext', 'vtt')
-                    elif auto_captions:
-                        first_lang = list(auto_captions.keys())[0]
-                        subtitle_info = auto_captions[first_lang][0] if isinstance(auto_captions[first_lang], list) else auto_captions[first_lang]
-                        subtitle_url = subtitle_info.get('url') if isinstance(subtitle_info, dict) else None
-                        if subtitle_url and isinstance(subtitle_info, dict):
-                            subtitle_ext = subtitle_info.get('ext', 'vtt')
-                    
-                    if subtitle_url:
-                        print(f"✅ Found subtitle URL: {subtitle_url[:80]}...")
-                        # Download subtitle directly from URL
-                        headers = {
-                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                            'Accept': 'text/vtt, text/srt, */*',
-                        }
-                        response = requests.get(subtitle_url, headers=headers, timeout=30)
-                        if response.status_code == 200:
-                            content = response.text
-                            
-                            # Convert VTT to SRT if needed
-                            if subtitle_ext == 'vtt' or 'WEBVTT' in content:
-                                print(f"🔄 Converting VTT to SRT format...")
-                                # Simple VTT to SRT conversion
-                                lines = content.split('\n')
-                                srt_lines = []
-                                counter = 1
-                                i = 0
-                                while i < len(lines):
-                                    line = lines[i].strip()
-                                    if not line or line.startswith('WEBVTT') or line.startswith('NOTE') or line.startswith('Kind:'):
-                                        i += 1
-                                        continue
-                                    if '-->' in line:
-                                        # This is a timestamp line
-                                        srt_lines.append(str(counter))
-                                        counter += 1
-                                        srt_lines.append(line)
-                                        i += 1
-                                        # Next line(s) are the subtitle text
-                                        text_lines = []
-                                        while i < len(lines) and lines[i].strip() and '-->' not in lines[i]:
-                                            text_lines.append(lines[i].strip())
-                                            i += 1
-                                        srt_lines.append('\n'.join(text_lines))
-                                        srt_lines.append('')  # Empty line between entries
-                                    else:
-                                        i += 1
-                                content = '\n'.join(srt_lines)
-                            
-                            with open(output_path, 'w', encoding='utf-8') as f:
-                                f.write(content)
-                            print(f"✅ Successfully downloaded and saved subtitles to {output_path}")
-                            return  # Success!
-                        else:
-                            print(f"⚠️ Failed to download subtitle: HTTP {response.status_code}")
-                    else:
-                        print(f"⚠️ No subtitle URL found in video info")
-                        
-            except Exception as direct_error:
-                print(f"⚠️ Direct subtitle extraction failed: {direct_error}")
-                import traceback
-                print(traceback.format_exc())
-                # Continue to fallback method
-                
-                # Download subtitles - even if format error occurs, subtitles may have been downloaded
-                try:
-                    ydl.download([video_url])
-                except Exception as download_error:
-                    # IMPORTANT: Check if subtitles were downloaded BEFORE the error
-                    # Sometimes yt-dlp downloads subtitles but then fails on format validation
-                    # yt-dlp names subtitle files as: <video_id>.<lang>.srt (e.g., i2qSxMVeVLI.en.srt)
-                    downloaded_subtitle_path = None
-                    
-                    # List all files for debugging
-                    all_files = os.listdir(output_dir)
-                    print(f"🔍 Checking for subtitle files in {output_dir}")
-                    print(f"📁 Files found: {all_files}")
-                    
-                    # Look for subtitle files - yt-dlp uses pattern: <video_id>.<lang>.srt
-                    for f in all_files:
-                        if f.startswith(video_id) and f.endswith(".srt"):
-                            downloaded_subtitle_path = os.path.join(output_dir, f)
-                            print(f"✅ Found subtitle file: {f}")
-                            break
-                    
-                    if downloaded_subtitle_path:
-                        # Subtitles were downloaded! Move them and return success
-                        shutil.move(downloaded_subtitle_path, output_path)
-                        print(f"✅ Subtitles downloaded successfully (format error occurred but subtitles are available)")
-                        return  # Success!
-                    
-                    # If subtitles weren't downloaded, check if it's a format error
-                    error_str = str(download_error).lower()
-                    if "format" in error_str or "not available" in error_str:
-                        print(f"⚠️ Format error during download, trying with ignoreerrors...")
-                        # Try with ignoreerrors to skip format validation
-                        ydl_opts_ignore = ydl_opts.copy()
-                        ydl_opts_ignore['ignoreerrors'] = True
-                        ydl_opts_ignore.pop('format', None)  # Remove format
-                        try:
-                            with yt_dlp.YoutubeDL(ydl_opts_ignore) as ydl2:
-                                ydl2.download([video_url])
-                            
-                            # Check again after ignoreerrors attempt
-                            for f in os.listdir(output_dir):
-                                if f.startswith(video_id) and f.endswith(".srt"):
-                                    downloaded_subtitle_path = os.path.join(output_dir, f)
-                                    break
-                            
-                            if downloaded_subtitle_path:
-                                shutil.move(downloaded_subtitle_path, output_path)
-                                print(f"✅ Subtitles downloaded with ignoreerrors")
-                                return
-                        except:
-                            pass  # Continue to outer exception handler
-                    else:
-                        # Re-raise non-format errors
-                        raise
-
-            # Locate the downloaded subtitle file (yt-dlp names them as <id>.<lang>.srt)
-            # List files for debugging
-            all_files = os.listdir(output_dir)
-            print(f"🔍 After download, checking for subtitle files in {output_dir}")
-            print(f"📁 Files found: {all_files}")
+                }
+            else:
+                ydl_opts['extractor_args'] = {
+                    'youtube': {
+                        'player_client': player_clients[attempt % len(player_clients)],
+                    }
+                }
             
+            # Let yt-dlp do its magic - it knows how to download subtitles!
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                # This will download subtitles and handle all the complexity internally
+                ydl.download([video_url])
+
+            # Check for downloaded subtitle file
+            # yt-dlp names them as: <video_id>.<lang>.srt (e.g., i2qSxMVeVLI.en.srt)
             downloaded_subtitle_path = None
-            for f in all_files:
+            for f in os.listdir(output_dir):
                 if f.startswith(video_id) and f.endswith(".srt"):
                     downloaded_subtitle_path = os.path.join(output_dir, f)
-                    print(f"✅ Found subtitle file: {f}")
-                    break
-
+                    file_size = os.path.getsize(downloaded_subtitle_path)
+                    if file_size > 0:  # Make sure it's not empty
+                        print(f"✅ Found subtitle file: {f} ({file_size} bytes)")
+                        break
+            
             if downloaded_subtitle_path:
+                # Move to the desired output path
                 shutil.move(downloaded_subtitle_path, output_path)
-                print(f"✅ Successfully moved subtitle file to {output_path}")
+                print(f"✅ Successfully downloaded subtitles to {output_path}")
                 return  # Success!
             else:
-                # List what files actually exist for debugging
-                print(f"❌ No subtitle file found. Video ID: {video_id}")
-                print(f"📁 All files in {output_dir}: {os.listdir(output_dir)}")
-                raise FileNotFoundError(f"Could not find SRT subtitle for {video_url}")
+                raise FileNotFoundError(f"Subtitle file not found after download attempt {attempt + 1}")
                 
         except (DownloadError, ExtractorError) as e:
             error_msg = str(e).lower()
             
-            # IMPORTANT: Check if subtitles were downloaded despite the error
-            # Logs show "[info] Downloading subtitles: en" - they might be there!
-            potential_video_id = None
-            if 'v=' in video_url:
-                potential_video_id = video_url.split('v=')[1].split('&')[0]
-            
-            if potential_video_id:
-                for f in os.listdir(output_dir):
-                    if f.startswith(potential_video_id) and f.endswith(".srt"):
-                        downloaded_subtitle_path = os.path.join(output_dir, f)
+            # Check if subtitles were downloaded despite the error
+            for f in os.listdir(output_dir):
+                if f.startswith(video_id) and f.endswith(".srt"):
+                    downloaded_subtitle_path = os.path.join(output_dir, f)
+                    if os.path.getsize(downloaded_subtitle_path) > 0:
                         shutil.move(downloaded_subtitle_path, output_path)
-                        print(f"✅ Subtitles were downloaded successfully (format error ignored)")
-                        return  # Success! Subtitles exist despite format error
+                        print(f"✅ Subtitles downloaded successfully (error occurred but subtitles are available)")
+                        return  # Success!
             
-            # Handle format errors - try without format specification
-            if "format is not available" in error_msg or "requested format" in error_msg:
-                if attempt < max_retries - 1:
-                    # Try without format specification (let yt-dlp choose)
-                    try:
-                        ydl_opts_no_format = ydl_opts.copy()
-                        # Remove format requirement entirely
-                        ydl_opts_no_format.pop('format', None)
-                        
-                        print(f"🔄 Retrying without format specification (attempt {attempt + 2})")
-                        
-                        with yt_dlp.YoutubeDL(ydl_opts_no_format) as ydl:
-                            try:
-                                info = ydl.extract_info(video_url, download=False, process=False)
-                                video_id = info.get('id') or info.get('display_id')
-                            except:
-                                if 'v=' in video_url:
-                                    video_id = video_url.split('v=')[1].split('&')[0]
-                                else:
-                                    raise
-                            ydl.download([video_url])
-                        
-                        # Check for subtitle file
-                        downloaded_subtitle_path = None
-                        for f in os.listdir(output_dir):
-                            if f.startswith(video_id) and f.endswith(".srt"):
-                                downloaded_subtitle_path = os.path.join(output_dir, f)
-                                break
-                        
-                        if downloaded_subtitle_path:
-                            shutil.move(downloaded_subtitle_path, output_path)
-                            print(f"✅ Successfully downloaded subtitles without format specification")
-                            return  # Success!
-                    except Exception as format_fix_error:
-                        # Format fix didn't work, continue to normal error handling
-                        print(f"⚠️ Format fix attempt failed: {format_fix_error}")
-                        pass
+            # Handle specific errors
             if "bot" in error_msg or "sign in" in error_msg or "confirm" in error_msg:
                 if attempt < max_retries - 1:
-                    # Remove format requirement and try again
-                    try:
-                        ydl_opts_no_format = ydl_opts.copy()
-                        ydl_opts_no_format.pop('format', None)
-                        ydl_opts_no_format['format'] = 'bestaudio/best'  # More flexible format
-                        
-                        with yt_dlp.YoutubeDL(ydl_opts_no_format) as ydl:
-                            info = ydl.extract_info(video_url, download=False, process=False)
-                            video_id = info.get('id') or info.get('display_id')
-                            if not video_id and 'v=' in video_url:
-                                video_id = video_url.split('v=')[1].split('&')[0]
-                            ydl.download([video_url])
-                        
-                        # Check for subtitle file
-                        downloaded_subtitle_path = None
-                        for f in os.listdir(output_dir):
-                            if f.startswith(video_id) and f.endswith(".srt"):
-                                downloaded_subtitle_path = os.path.join(output_dir, f)
-                                break
-                        
-                        if downloaded_subtitle_path:
-                            shutil.move(downloaded_subtitle_path, output_path)
-                            return  # Success!
-                    except:
-                        pass  # Fall through to bot detection check
-                # If format fix didn't work, continue to bot detection handling
-            if "bot" in error_msg or "sign in" in error_msg or "confirm" in error_msg:
-                if attempt < max_retries - 1:
-                    wait_time = (attempt + 1) * 3  # Exponential backoff: 3s, 6s, 9s, 12s
+                    wait_time = (attempt + 1) * 3  # Exponential backoff
+                    print(f"⚠️ Bot detection (attempt {attempt + 1}), waiting {wait_time}s before retry...")
                     time.sleep(wait_time)
                     continue
                 else:
-                    # Final attempt failed - provide helpful error message
-                    # Check if cookies were used but expired
-                    if cookies_file:
-                        error_solution = (
-                            f"YouTube bot detection after {max_retries} attempts.\n\n"
-                            "**⚠️ Your cookies appear to be expired or invalid.**\n\n"
-                            "**The logs show:** 'The provided YouTube account cookies are no longer valid. "
-                            "They have likely been rotated in the browser as a security measure.'\n\n"
-                            "**Solution: Refresh Your Cookies**\n\n"
-                            "1. **Sign in to YouTube** in your browser (fresh login)\n"
-                            "2. **Export cookies immediately** using browser extension\n"
-                            "3. **Convert to base64** and update `YOUTUBE_COOKIES_B64` in Render\n"
-                            "4. **Redeploy** your service\n\n"
-                            "**Important:**\n"
-                            "- Export cookies RIGHT AFTER signing in (don't wait!)\n"
-                            "- Cookies expire quickly - YouTube rotates them for security\n"
-                            "- See `REFRESH_COOKIES.md` for detailed instructions\n\n"
-                            "**Alternative:** Wait 10-15 minutes and try again (YouTube rate limiting)"
-                        )
-                    else:
-                        error_solution = (
-                            f"YouTube bot detection after {max_retries} attempts.\n\n"
-                            "**This is a known issue with YouTube's anti-bot measures.**\n\n"
-                            "**Immediate Solutions:**\n"
-                            "1. Wait 5-10 minutes and try again (YouTube rate limiting)\n"
-                            "2. Try a different video URL\n"
-                            "3. The video may have restricted access\n\n"
-                            "**Recommended Solution:**\n"
-                            "Use YouTube cookies to authenticate:\n"
-                            "1. Export cookies from your browser (see: https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp)\n"
-                            "2. Convert to base64 and set `YOUTUBE_COOKIES_B64` in Render\n"
-                            "3. Redeploy your service\n\n"
-                            "**Note:** YouTube frequently updates their bot detection. "
-                            "This may require periodic updates to yt-dlp or using cookies."
-                        )
+                    error_solution = (
+                        f"YouTube bot detection after {max_retries} attempts.\n\n"
+                        "**Solutions:**\n"
+                        "1. Set YOUTUBE_COOKIES_B64 with fresh cookies\n"
+                        "2. Wait 5-10 minutes and try again\n"
+                        "3. Try a different video URL\n\n"
+                        "See DEPLOY.md for cookie setup instructions."
+                    )
                     raise Exception(error_solution)
+            elif "format" in error_msg or "not available" in error_msg:
+                # Format errors shouldn't matter since we skip download
+                # But if they do, try with ignoreerrors
+                if attempt < max_retries - 1:
+                    print(f"⚠️ Format error (unexpected), trying with ignoreerrors...")
+                    ydl_opts['ignoreerrors'] = True
+                    continue
+                else:
+                    raise Exception(f"Subtitle download failed: {e}")
             else:
-                # Re-raise other errors immediately
-                raise
+                # Other errors - retry
+                if attempt < max_retries - 1:
+                    print(f"⚠️ Error occurred, retrying... ({error_msg[:100]})")
+                    time.sleep(3)
+                    continue
+                else:
+                    raise
+                    
         except Exception as e:
             if attempt < max_retries - 1:
+                print(f"⚠️ Unexpected error, retrying... ({str(e)[:100]})")
                 time.sleep(3)
                 continue
             else:
-                raise
+                raise FileNotFoundError(f"Could not download SRT subtitle for {video_url}: {e}")
+
+    # If we get here, all retries failed
+    raise FileNotFoundError(f"Could not find SRT subtitle for {video_url} after {max_retries} attempts")
 
 
 def decode_video_to_frames(video_path: str) -> str:
     """
-    Decodes a video into JPEG frames at the frame rate specified by config.VIDEO_FPS.
-    Frames are saved in config.VIDEO_DATABASE_PATH/video_names/frames/.
-
-    Args:
-        video_path: The absolute path to the video file.
-
-    Returns:
-        The absolute path to the directory containing the extracted frames.
-
-    Raises:
-        FileNotFoundError: If the video file does not exist.
-        Exception: If frame extraction fails.
+    Decode video into frames and save them to disk.
+    Returns the path to the frames directory.
     """
+    import cv2
+    from tqdm import tqdm
+    from dvd import config
 
-    if not os.path.isfile(video_path):
-        raise FileNotFoundError(f"Video file '{video_path}' does not exist.")
-
-    video_name = os.path.splitext(os.path.basename(video_path))[0]
-    frames_dir = os.path.join(config.VIDEO_DATABASE_FOLDER, video_name, 'frames')
+    video_id = os.path.splitext(os.path.basename(video_path))[0]
+    frames_dir = os.path.join(config.VIDEO_DATABASE_FOLDER, video_id, "frames")
     os.makedirs(frames_dir, exist_ok=True)
 
     cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        raise Exception(f"Failed to open video file '{video_path}'.")
-
     fps = cap.get(cv2.CAP_PROP_FPS)
-    target_fps = getattr(config, 'VIDEO_FPS', fps)
-    frame_interval = int(round(fps / target_fps)) if target_fps < fps else 1
+    frame_interval = int(fps / config.VIDEO_FPS)  # Extract frame every N frames
 
     frame_count = 0
     saved_count = 0
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-        if frame_count % frame_interval == 0:
-            frame_filename = os.path.join(frames_dir, f"frame_n{saved_count:06d}.jpg")
-            cv2.imwrite(frame_filename, frame)
-            saved_count += 1
-        frame_count += 1
+
+    with tqdm(desc=f"Decoding {video_id}") as pbar:
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            if frame_count % frame_interval == 0:
+                frame_filename = os.path.join(
+                    frames_dir, f"frame_n{saved_count * frame_interval}.jpg"
+                )
+                cv2.imwrite(frame_filename, frame)
+                saved_count += 1
+                pbar.update(1)
+
+            frame_count += 1
 
     cap.release()
-    return os.path.abspath(frames_dir)
-
-if __name__ == "__main__":
-    download_srt_subtitle("https://www.youtube.com/watch?v=PQFQ-3d2J-8", "./video_database/PQFQ-3d2J-8/subtitles.srt")
+    return frames_dir
