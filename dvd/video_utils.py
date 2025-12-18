@@ -131,37 +131,24 @@ def download_srt_subtitle(video_url: str, output_path: str):
             # No proxy - use default
             ytt_api = YouTubeTranscriptApi()
         
-        # Fetch transcript (prefer English, but will use any available)
+        # Fetch transcript directly (prefer English, but will use any available)
         print(f"🔄 Fetching transcript for video {video_id}...")
-        transcript_list = ytt_api.list_transcripts(video_id)
         
-        # Try to get English transcript first
-        transcript = None
+        # Try English first, then any available language
+        transcript_data = None
         try:
-            transcript = transcript_list.find_transcript(['en', 'en-US', 'en-GB'])
+            transcript_data = ytt_api.fetch(video_id, languages=['en', 'en-US', 'en-GB'])
             print(f"✅ Found English transcript")
         except:
-            # If no English, get the first available transcript
+            # If no English, try any available language
             try:
-                transcript = transcript_list.find_manually_created_transcript(['en', 'en-US', 'en-GB'])
-                print(f"✅ Found manually created English transcript")
-            except:
-                # Get any available transcript
-                transcript = transcript_list.find_generated_transcript(['en', 'en-US', 'en-GB'])
-                print(f"✅ Found auto-generated English transcript")
+                transcript_data = ytt_api.fetch(video_id)
+                print(f"✅ Found transcript in available language")
+            except Exception as fetch_error:
+                raise NoTranscriptFound(video_id, None, None, None) from fetch_error
         
-        # If still no transcript, try any language
-        if not transcript:
-            for available_transcript in transcript_list:
-                transcript = available_transcript
-                print(f"✅ Found transcript in language: {transcript.language_code}")
-                break
-        
-        if not transcript:
+        if not transcript_data:
             raise NoTranscriptFound(video_id, None, None, None)
-        
-        # Fetch the actual transcript data
-        transcript_data = transcript.fetch()
         
         # Convert to SRT format
         srt_content = _convert_transcript_to_srt(transcript_data)
