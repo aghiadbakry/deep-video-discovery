@@ -120,7 +120,7 @@ def download_srt_subtitle(video_url: str, output_path: str):
         # Configure YouTube Transcript API with optional proxy
         if proxy_username and proxy_password:
             from youtube_transcript_api.proxies import WebshareProxyConfig
-            print(f"🌐 Using proxy for subtitle download...")
+            print(f"🌐 Using proxy for subtitle download (username: {proxy_username[:3]}***)...")
             ytt_api = YouTubeTranscriptApi(
                 proxy_config=WebshareProxyConfig(
                     proxy_username=proxy_username,
@@ -129,6 +129,7 @@ def download_srt_subtitle(video_url: str, output_path: str):
             )
         else:
             # No proxy - use default
+            print(f"⚠️ No proxy configured - YouTube may block cloud provider IPs")
             ytt_api = YouTubeTranscriptApi()
         
         # Fetch transcript directly (prefer English, but will use any available)
@@ -139,16 +140,18 @@ def download_srt_subtitle(video_url: str, output_path: str):
         try:
             transcript_data = ytt_api.fetch(video_id, languages=['en', 'en-US', 'en-GB'])
             print(f"✅ Found English transcript")
-        except:
+        except Exception as english_error:
             # If no English, try any available language
+            print(f"⚠️ English transcript not available, trying any language...")
             try:
                 transcript_data = ytt_api.fetch(video_id)
                 print(f"✅ Found transcript in available language")
             except Exception as fetch_error:
-                raise NoTranscriptFound(video_id, None, None, None) from fetch_error
+                # Re-raise the original error with better context
+                raise fetch_error
         
         if not transcript_data:
-            raise NoTranscriptFound(video_id, None, None, None)
+            raise FileNotFoundError(f"No transcript data returned for video {video_id}")
         
         # Convert to SRT format
         srt_content = _convert_transcript_to_srt(transcript_data)
@@ -160,12 +163,24 @@ def download_srt_subtitle(video_url: str, output_path: str):
         file_size = os.path.getsize(output_path)
         print(f"✅ Successfully downloaded subtitles to {output_path} ({file_size} bytes)")
         
-    except TranscriptsDisabled:
-        raise FileNotFoundError(f"Transcripts are disabled for video {video_id}")
-    except NoTranscriptFound:
-        raise FileNotFoundError(f"No transcript found for video {video_id}")
+    except TranscriptsDisabled as e:
+        raise FileNotFoundError(f"Transcripts are disabled for video {video_id}: {e}")
+    except NoTranscriptFound as e:
+        raise FileNotFoundError(f"No transcript found for video {video_id}: {e}")
     except Exception as e:
-        raise FileNotFoundError(f"Could not download SRT subtitle for {video_url}: {e}")
+        # Check if it's a RequestBlocked error (IP blocking)
+        error_str = str(e).lower()
+        if 'requestblocked' in error_str or 'ip' in error_str or 'blocked' in error_str:
+            error_msg = (
+                f"YouTube is blocking requests from this IP (cloud provider IP).\n\n"
+                f"**Solution:** Set proxy credentials via environment variables:\n"
+                f"  YOUTUBE_PROXY_USERNAME=your-username\n"
+                f"  YOUTUBE_PROXY_PASSWORD=your-password\n\n"
+                f"Original error: {e}"
+            )
+            raise FileNotFoundError(error_msg)
+        else:
+            raise FileNotFoundError(f"Could not download SRT subtitle for {video_url}: {e}")
 
 
 def _convert_transcript_to_srt(transcript_data: list) -> str:
